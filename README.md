@@ -54,4 +54,5 @@ The app is organized into tabs:
 
 ## Minimal runtime requirement
 
-- LLM extraction requires `GPUSTACK_API_KEY` in environment variables.
+- Default provider is Gemini and requires `GEMINI_API_KEY`.
+- Optional provider switch: set `LLM_PROVIDER=gpustack` and provide `GPUSTACK_API_KEY`.

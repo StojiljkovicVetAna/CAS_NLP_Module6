@@ -123,6 +123,7 @@ def _classical_summary(
 
 def _llm_summary(
     llm_status: str,
+    llm_provider: str | None,
     llm_model: str | None,
     entity_count: int,
     relation_count: int,
@@ -136,6 +137,7 @@ def _llm_summary(
     base = (
         "### LLM Pipeline (External API)\n"
         f"- Status: {llm_status}\n"
+        f"- Provider: {llm_provider or 'unknown'}\n"
         f"- Model: {llm_model or 'unknown'}\n"
         f"- Allowed labels (from selected spaCy model): {allowed_str}\n"
         f"- Entities detected: {entity_count}\n"
@@ -190,6 +192,7 @@ def run_dashboard(
 
     llm_placeholder = {
         "status": "skipped_due_to_classical_error",
+        "provider": None,
         "entities": [],
         "relations": [],
         "error": "LLM extraction was skipped because classical NER failed first.",
@@ -204,6 +207,7 @@ def run_dashboard(
         comparison_visual = "<p>No visual comparison available yet because there is no input text.</p>"
         llm_not_started = {
             "status": "not_started",
+            "provider": None,
             "entities": [],
             "relations": [],
             "model": None,
@@ -325,6 +329,7 @@ def run_dashboard(
         )
         llm_summary = _llm_summary(
             llm_status=llm_status,
+            llm_provider=llm_result.get("provider"),
             llm_model=llm_result.get("model"),
             entity_count=len(llm_entities),
             relation_count=len(llm_relations),
@@ -343,6 +348,7 @@ def run_dashboard(
     except Exception as exc:  # noqa: BLE001
         llm_result = {
             "status": "runtime_error",
+            "provider": None,
             "entities": [],
             "relations": [],
             "error": f"LLM branch failed: {exc}",
@@ -357,6 +363,7 @@ def run_dashboard(
         llm_entity_html = "<p>LLM entity highlighting unavailable due to runtime error.</p>"
         llm_summary = _llm_summary(
             llm_status=llm_status,
+            llm_provider=None,
             llm_model=None,
             entity_count=0,
             relation_count=0,

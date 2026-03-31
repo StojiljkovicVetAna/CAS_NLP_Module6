@@ -1,4 +1,4 @@
-"""LLM extraction utilities using an OpenAI-compatible API (GPUStack)."""
+"""LLM extraction utilities using OpenAI-compatible external APIs."""
 
 from __future__ import annotations
 
@@ -13,7 +13,10 @@ from openai import OpenAI
 
 GPUSTACK_BASE_URL_DEFAULT = "https://gpustack.unibe.ch/v1"
 GPUSTACK_MODEL_DEFAULT = "gpt-oss-120b"
+GEMINI_BASE_URL_DEFAULT = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_MODEL_DEFAULT = "gemini-3-flash-preview"
 GPUSTACK_MAX_TOKENS_DEFAULT = 4000
+LLM_PROVIDER_DEFAULT = "gemini"
 
 # Load local .env when available (useful for local development).
 # In Hugging Face Spaces, secrets are injected as environment variables.
@@ -265,43 +268,52 @@ def _parse_extraction_payload(
     return entities, relations
 
 
-def run_llm_extraction(
+def _normalize_gemini_base_url(base_url: str | None) -> str:
+    """Normalize Gemini endpoints to the OpenAI-compatible base URL."""
+    candidate = (base_url or "").strip()
+    if not candidate:
+        return GEMINI_BASE_URL_DEFAULT
+
+    lowered = candidate.lower()
+    if "gemini.googleapis.com" in lowered:
+        return GEMINI_BASE_URL_DEFAULT
+
+    if "generativelanguage.googleapis.com" in lowered and "/openai" not in lowered:
+        return f"{candidate.rstrip('/')}/openai/"
+
+    if not candidate.endswith("/"):
+        return f"{candidate}/"
+    return candidate
+
+
+def _normalize_gemini_model(model_name: str | None) -> str:
+    """Normalize common Gemini model aliases to OpenAI-compatible names."""
+    candidate = (model_name or "").strip()
+    if not candidate:
+        return GEMINI_MODEL_DEFAULT
+
+    if candidate.startswith("models/"):
+        candidate = candidate.split("/", 1)[1]
+
+    aliases = {
+        "gemini-3.0-flash": "gemini-3-flash-preview",
+        "gemini-3.0-flash-lite": "gemini-3-flash-preview",
+        "gemini-2.0-flash": "gemini-2.5-flash",
+    }
+    return aliases.get(candidate, candidate)
+
+
+def _run_openai_compatible_extraction(
+    *,
     text: str,
-    allowed_labels: list[str] | None = None,
-    allowed_label_descriptions: dict[str, str] | None = None,
+    provider: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    allowed_labels: list[str] | None,
+    allowed_label_descriptions: dict[str, str] | None,
 ) -> dict[str, Any]:
-    """Call the configured LLM endpoint and return defensive structured output."""
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return {
-            "status": "not_started",
-            "entities": [],
-            "relations": [],
-            "model": None,
-            "base_url": None,
-            "allowed_labels": allowed_labels or [],
-            "error": None,
-        }
-
-    api_key = _get_env_value("GPUSTACK_API_KEY")
-    base_url = _get_env_value(
-        "GPUSTACK_BASE_URL",
-        "GPUSTACK_API_URL",
-        default=GPUSTACK_BASE_URL_DEFAULT,
-    )
-    model_name = _get_env_value("GPUSTACK_MODEL", default=GPUSTACK_MODEL_DEFAULT)
-
-    if not api_key:
-        return {
-            "status": "configuration_error",
-            "entities": [],
-            "relations": [],
-            "model": model_name,
-            "base_url": base_url,
-            "allowed_labels": allowed_labels or [],
-            "error": "GPUSTACK_API_KEY is not set. Add it as an environment variable.",
-        }
-
+    """Run extraction against an OpenAI-compatible chat-completions endpoint."""
     client = OpenAI(base_url=base_url, api_key=api_key)
     allowed_label_set = {label.strip().upper() for label in (allowed_labels or []) if label.strip()}
     system_prompt = _build_system_prompt(
@@ -319,7 +331,7 @@ def run_llm_extraction(
             max_tokens=GPUSTACK_MAX_TOKENS_DEFAULT,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": cleaned},
+                {"role": "user", "content": text},
             ],
         )
         finish_reason = response.choices[0].finish_reason
@@ -327,6 +339,7 @@ def run_llm_extraction(
         entities, relations = _parse_extraction_payload(content, allowed_labels=allowed_label_set)
         return {
             "status": "ok",
+            "provider": provider,
             "entities": entities,
             "relations": relations,
             "model": model_name,
@@ -344,13 +357,14 @@ def run_llm_extraction(
                     max_tokens=GPUSTACK_MAX_TOKENS_DEFAULT * 2,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": cleaned},
+                        {"role": "user", "content": text},
                     ],
                 )
                 content = (retry_response.choices[0].message.content or "").strip()
                 entities, relations = _parse_extraction_payload(content, allowed_labels=allowed_label_set)
                 return {
                     "status": "ok",
+                    "provider": provider,
                     "entities": entities,
                     "relations": relations,
                     "model": model_name,
@@ -363,6 +377,7 @@ def run_llm_extraction(
 
         return {
             "status": "parse_error",
+            "provider": provider,
             "entities": [],
             "relations": [],
             "model": model_name,
@@ -374,6 +389,7 @@ def run_llm_extraction(
     except Exception as exc:  # noqa: BLE001
         return {
             "status": "api_error",
+            "provider": provider,
             "entities": [],
             "relations": [],
             "model": model_name,
@@ -381,3 +397,82 @@ def run_llm_extraction(
             "allowed_labels": sorted(allowed_label_set),
             "error": str(exc),
         }
+
+
+def run_llm_extraction(
+    text: str,
+    allowed_labels: list[str] | None = None,
+    allowed_label_descriptions: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Call the configured LLM endpoint and return defensive structured output."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return {
+            "status": "not_started",
+            "provider": None,
+            "entities": [],
+            "relations": [],
+            "model": None,
+            "base_url": None,
+            "allowed_labels": allowed_labels or [],
+            "error": None,
+        }
+
+    provider = (_get_env_value("LLM_PROVIDER", default=LLM_PROVIDER_DEFAULT) or LLM_PROVIDER_DEFAULT).lower()
+    if provider in {"google", "google_gemini"}:
+        provider = "gemini"
+    if provider not in {"gemini", "gpustack"}:
+        provider = LLM_PROVIDER_DEFAULT
+
+    if provider == "gemini":
+        api_key = _get_env_value("GEMINI_API_KEY", "GOOGLE_API_KEY")
+        base_url = _normalize_gemini_base_url(
+            _get_env_value(
+                "GEMINI_BASE_URL",
+                "GEMINI_API_URL",
+                default=GEMINI_BASE_URL_DEFAULT,
+            )
+        )
+        model_name = _normalize_gemini_model(
+            _get_env_value("GEMINI_MODEL", default=GEMINI_MODEL_DEFAULT)
+        )
+        if not api_key:
+            return {
+                "status": "configuration_error",
+                "provider": provider,
+                "entities": [],
+                "relations": [],
+                "model": model_name,
+                "base_url": base_url,
+                "allowed_labels": allowed_labels or [],
+                "error": "GEMINI_API_KEY is not set. Add it as an environment variable/secret.",
+            }
+    else:
+        api_key = _get_env_value("GPUSTACK_API_KEY")
+        base_url = _get_env_value(
+            "GPUSTACK_BASE_URL",
+            "GPUSTACK_API_URL",
+            default=GPUSTACK_BASE_URL_DEFAULT,
+        )
+        model_name = _get_env_value("GPUSTACK_MODEL", default=GPUSTACK_MODEL_DEFAULT)
+        if not api_key:
+            return {
+                "status": "configuration_error",
+                "provider": provider,
+                "entities": [],
+                "relations": [],
+                "model": model_name,
+                "base_url": base_url,
+                "allowed_labels": allowed_labels or [],
+                "error": "GPUSTACK_API_KEY is not set. Add it as an environment variable/secret.",
+            }
+
+    return _run_openai_compatible_extraction(
+        text=cleaned,
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url or "",
+        model_name=model_name or "",
+        allowed_labels=allowed_labels,
+        allowed_label_descriptions=allowed_label_descriptions,
+    )
