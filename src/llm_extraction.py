@@ -21,15 +21,27 @@ load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
 def _get_env_value(*keys: str, default: str | None = None) -> str | None:
     """Read first non-empty environment value across key aliases."""
+    def _clean(value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if (cleaned.startswith('"') and cleaned.endswith('"')) or (
+            cleaned.startswith("'") and cleaned.endswith("'")
+        ):
+            cleaned = cleaned[1:-1].strip()
+        return cleaned or None
+
     for key in keys:
-        value = os.getenv(key)
-        if value and value.strip():
-            return value.strip()
+        value = _clean(os.getenv(key))
+        if value:
+            return value
 
         quoted_key = f'"{key}"'
-        quoted_value = os.getenv(quoted_key)
-        if quoted_value and quoted_value.strip():
-            return quoted_value.strip()
+        quoted_value = _clean(os.getenv(quoted_key))
+        if quoted_value:
+            return quoted_value
     return default
 
 
